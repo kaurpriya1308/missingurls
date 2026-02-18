@@ -73,6 +73,13 @@ st.markdown("""
         background-color: #f5f5f5;
         border-radius: 4px;
     }
+    .exclude-box {
+        border-left: 4px solid #f57c00;
+        padding: 15px;
+        margin: 10px 0;
+        background-color: #fff3e0;
+        border-radius: 4px;
+    }
     .dataframe a {
         color: #1a73e8;
         text-decoration: none;
@@ -95,8 +102,79 @@ st.markdown("""
         background: linear-gradient(90deg, #e3f2fd, #bbdefb);
         color: #0d47a1;
     }
+    .keyword-tag {
+        display: inline-block;
+        background: #fff3e0;
+        color: #e65100;
+        border: 1px solid #ffb74d;
+        border-radius: 12px;
+        padding: 2px 10px;
+        margin: 2px;
+        font-size: 12px;
+    }
     </style>
 """, unsafe_allow_html=True)
+
+
+# =============================================================================
+# BLOCKED DOMAINS — never crawled
+# =============================================================================
+ALWAYS_BLOCKED_DOMAINS = {
+    "s3.amazonaws.com",
+    "amazonaws.com",
+}
+
+
+def is_blocked_domain(url: str) -> bool:
+    """Return True if the URL belongs to a domain that must never be crawled."""
+    try:
+        netloc = urlparse(url).netloc.lower()
+        for blocked in ALWAYS_BLOCKED_DOMAINS:
+            if netloc == blocked or netloc.endswith("." + blocked):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+# =============================================================================
+# ANALYST KEYWORD EXCLUSION HELPER
+# =============================================================================
+def build_exclusion_regex(keyword_input: str):
+    """
+    Parse the analyst keyword exclusion box.
+    Keywords separated by | are treated as alternatives.
+    Each keyword is wrapped so that hyphens / spaces / underscores are optional.
+    Returns a compiled regex or None.
+    """
+    if not keyword_input or not keyword_input.strip():
+        return None
+
+    raw_keywords = [k.strip() for k in keyword_input.split("|") if k.strip()]
+    if not raw_keywords:
+        return None
+
+    patterns = []
+    for kw in raw_keywords:
+        # escape special regex chars first
+        escaped = re.escape(kw)
+        # Replace escaped spaces / hyphens / underscores with a flexible separator
+        # re.escape turns ' ' -> '\ ', '-' -> '\-', '_' -> '_'
+        flexible = re.sub(r'(\\ |\\\-|_)+', r'[\\s\\-_]*', escaped)
+        patterns.append(flexible)
+
+    combined = "|".join(f"(?:{p})" for p in patterns)
+    try:
+        return re.compile(combined, re.IGNORECASE)
+    except re.error:
+        return None
+
+
+def url_matches_exclusion(url: str, exclusion_regex) -> bool:
+    """Return True if the URL should be excluded by analyst keywords."""
+    if exclusion_regex is None:
+        return False
+    return bool(exclusion_regex.search(url))
 
 
 # =============================================================================
@@ -104,13 +182,11 @@ st.markdown("""
 # =============================================================================
 class DocTypeClassifier:
     """
-    Classifies discovered URLs into PDF-scope, HTML-scope, Both, or Out-of-Scope
-    based on the comprehensive document type matrix.
+    Classifies discovered URLs into PDF-scope, HTML-scope, Both, or Out-of-Scope.
     """
 
-    # --- PDF ONLY document types (keywords/patterns) ---
+    # --- PDF ONLY document types ---
     PDF_ONLY_KEYWORDS = [
-        # 1. PRESENTATIONS
         r'investor[\s\-_]*day[\s\-_]*presentation',
         r'earnings[\s\-_]*presentation',
         r'supplementary[\s\-_]*information',
@@ -122,7 +198,6 @@ class DocTypeClassifier:
         r'roadshow[\s\-_]*presentation',
         r'agm[\s\-_]*presentation',
         r'annual[\s\-_]*general[\s\-_]*meeting[\s\-_]*presentation',
-        # 3. FILINGS (PDF only)
         r'annual[\s\-_]*report',
         r'integrated[\s\-_]*report',
         r'interim[\s\-_]*report',
@@ -185,9 +260,7 @@ class DocTypeClassifier:
         r'change[\s\-_]*in[\s\-_]*auditor',
         r'change[\s\-_]*in[\s\-_]*year[\s\-_]*end',
         r'fund[\s\-_]*sheet',
-        # 4. ESG (PDF only)
         r'estma[\s\-_]*report',
-        # 5. SECTOR-SPECIFIC (PDF only)
         r'prepared[\s\-_]*remark',
         r'follow[\s\-_]*up[\s\-_]*transcript',
         r'integrated[\s\-_]*resource[\s\-_]*plan',
@@ -198,13 +271,11 @@ class DocTypeClassifier:
 
     # --- HTML ONLY document types ---
     HTML_ONLY_KEYWORDS = [
-        # 5. SECTOR-SPECIFIC
         r'blog(?:s)?[\s\-_]*(?:&|and)?[\s\-_]*insight',
         r'/blog/',
         r'/blogs/',
         r'/insight/',
         r'/insights/',
-        # 6. COMPANY INFO
         r'about[\s\-_]*us',
         r'/about/',
         r'company[\s\-_]*history',
@@ -226,7 +297,6 @@ class DocTypeClassifier:
         r'customer[\s\-_]*list',
         r'/customers/',
         r'strategic[\s\-_]*alliance',
-        # 8. PRODUCT & SERVICE (HTML only)
         r'product[\s\-_]*listing',
         r'/products/',
         r'feature[\s\-_]*description',
@@ -241,27 +311,24 @@ class DocTypeClassifier:
 
     # --- BOTH PDF & HTML document types ---
     BOTH_KEYWORDS = [
-        # 2. PRESS RELEASES / NEWS
         r'press[\s\-_]*release',
-        r'/press-release',
+        r'/press[\-_]*release',
         r'/pressrelease',
         r'news[\s\-_]*article',
         r'/news/',
-        r'/news-detail',
-        r'/news-events',
+        r'/news[\-_]*detail',
+        r'/news[\-_]*events',
         r'company[\s\-_]*announcement',
         r'/announcement',
         r'media[\s\-_]*center',
         r'/media/',
         r'newsroom',
         r'/newsroom/',
-        # 3. FILINGS (Both)
         r'operating[\s\-_]*metric',
         r'earnings[\s\-_]*(?!presentation)',
         r'profit[\s\-_]*(?:&|and)?[\s\-_]*loss',
         r'shareholding[\s\-_]*pattern',
         r'corporate[\s\-_]*action',
-        # 4. ESG (Both)
         r'sustainab',
         r'/sustainability/',
         r'corporate[\s\-_]*social[\s\-_]*responsibility',
@@ -294,11 +361,10 @@ class DocTypeClassifier:
         r'corporate[\s\-_]*impact',
         r'esg[\s\-_]*report',
         r'topic[\s\-_]*specific[\s\-_]*esg',
-        # 5. SECTOR-SPECIFIC (Both)
         r'white[\s\-_]*paper',
         r'/whitepaper',
         r'case[\s\-_]*stud',
-        r'/case-stud',
+        r'/case[\-_]*stud',
         r'industry[\s\-_]*insight',
         r'thought[\s\-_]*leadership',
         r'factsheet',
@@ -314,8 +380,7 @@ class DocTypeClassifier:
         r'leadership[\s\-_]*insight',
         r'leadership[\s\-_]*interview',
         r'customer[\s\-_]*stor',
-        r'/customer-stories/',
-        # 7. BUSINESS UPDATES (Both)
+        r'/customer[\-_]*stories/',
         r'project[\s\-_]*update',
         r'business[\s\-_]*update',
         r'r[\s\-_]*&?[\s\-_]*d[\s\-_]*update',
@@ -329,16 +394,37 @@ class DocTypeClassifier:
         r'financial[\s\-_]*highlight',
         r'corporate[\s\-_]*action[\s\-_]*update',
         r'funding[\s\-_]*announcement',
-        # 8. PRODUCT & SERVICE (Both)
         r'product[\s\-_]*launch',
         r'product[\s\-_]*specification',
         r'product[\s\-_]*spec',
+        # Investor Relations — always in-scope
+        r'investor[\s\-_]*relation',
+        r'/ir/',
+        r'/investors/',
+        # SEC filings — in-scope investor content
+        r'sec[\s\-_]*filing',
+        r'/sec[\s\-_]*filing',
+        # Email alerts — in-scope
+        r'email[\s\-_]*alert',
+        # Subsidiary pages — in-scope
+        r'subsidiar',
+        # Credit ratings — in-scope
+        r'credit[\s\-_]*rating',
+        # Research / Analyst reports — in-scope (with or without hyphen)
+        r'analyst[\s\-_]*report',
+        r'research[\s\-_]*report',
+        r'research[\s\-_]*analyst',
+        r'research[\s\-_]*/?[\s\-_]*analyst',
+        # Privacy notices (IR disclosure context) — in-scope
+        r'privacy[\s\-_]*notice',
     ]
 
     # --- OUT OF SCOPE patterns ---
+    # NOTE: sec-filings, email-alerts, privacy-notices, subsidiary,
+    #       credit-ratings, research/analyst-reports are intentionally
+    #       kept OUT of this list — they are in-scope IR content.
     OUT_OF_SCOPE_KEYWORDS = [
-        r'privacy[\s\-_]*polic',
-        r'/privacy/',
+        r'privacy[\s\-_]*polic',      # privacy policy ≠ privacy notice
         r'terms[\s\-_]*(?:&|and)?[\s\-_]*condition',
         r'/terms/',
         r'/tos/',
@@ -347,7 +433,7 @@ class DocTypeClassifier:
         r'legal[\s\-_]*term',
         r'/legal/',
         r'clinical[\s\-_]*trial',
-        r'/clinical-trials/',
+        r'/clinical[\s\-_]*trial',
         r'drug[\s\-_]*prescription',
         r'fda[\s\-_]*correspondence',
         r'safety[\s\-_]*data[\s\-_]*sheet',
@@ -360,11 +446,11 @@ class DocTypeClassifier:
         r'/faq/',
         r'/faqs/',
         r'/contact/',
-        r'/contact-us/',
+        r'/contact[\s\-_]*us/',
         r'/forum/',
         r'/forums/',
         r'/chat/',
-        r'/e-commerce/',
+        r'/e[\s\-_]*commerce/',
         r'/shop/',
         r'/cart/',
         r'/checkout/',
@@ -372,7 +458,7 @@ class DocTypeClassifier:
         r'/signup/',
         r'/register/',
         r'/account/',
-        r'/my-account/',
+        r'/my[\s\-_]*account/',
         r'/sitemap',
         r'/cookie',
         r'/disclaimer',
@@ -387,18 +473,17 @@ class DocTypeClassifier:
     # --- URL path patterns for quick classification ---
     PDF_PATH_PATTERNS = [
         r'/presentation',
-        r'/investor-day',
-        r'/annual-report',
-        r'/interim-report',
-        r'/quarterly-report',
+        r'/investor[\-_]*day',
+        r'/annual[\-_]*report',
+        r'/interim[\-_]*report',
+        r'/quarterly[\-_]*report',
         r'/proxy',
         r'/prospectus',
         r'/filing',
-        r'/sec-filing',
         r'/regulatory',
         r'/transcript',
-        r'/prepared-remarks',
-        r'/financial-report',
+        r'/prepared[\-_]*remarks',
+        r'/financial[\-_]*report',
         r'/supplemental',
     ]
 
@@ -409,8 +494,8 @@ class DocTypeClassifier:
         r'/management',
         r'/board',
         r'/executives',
-        r'/corporate-profile',
-        r'/company-overview',
+        r'/corporate[\-_]*profile',
+        r'/company[\-_]*overview',
         r'/products',
         r'/services',
         r'/solutions',
@@ -430,18 +515,24 @@ class DocTypeClassifier:
         r'/sustainability',
         r'/esg',
         r'/governance',
-        r'/corporate-impact',
-        r'/corporate-responsibility',
+        r'/corporate[\-_]*impact',
+        r'/corporate[\-_]*responsibility',
         r'/csr',
         r'/investor',
         r'/ir/',
         r'/events',
-        r'/case-stud',
+        r'/case[\-_]*stud',
         r'/whitepaper',
-        r'/white-paper',
+        r'/white[\-_]*paper',
         r'/reports',
         r'/updates',
         r'/highlights',
+        r'/sec[\-_]*filing',
+        r'/credit[\-_]*rating',
+        r'/analyst',
+        r'/research',
+        r'/email[\-_]*alert',
+        r'/subsidiar',
     ]
 
     OOS_PATH_PATTERNS = [
@@ -452,7 +543,6 @@ class DocTypeClassifier:
         r'/login',
         r'/signup',
         r'/register',
-        r'/privacy',
         r'/terms',
         r'/legal',
         r'/cookie',
@@ -467,16 +557,41 @@ class DocTypeClassifier:
         r'/forum',
         r'/chat',
         r'/account',
-        r'/clinical-trial',
+        r'/clinical[\-_]*trial',
         r'/sds',
         r'/disclaimer',
+        # /privacy/ only OOS if not privacy-notice context — handled via override
+        r'/privacy/',
+    ]
+
+    # Patterns that override OOS classification → force in-scope
+    IN_SCOPE_OVERRIDE_PATTERNS = [
+        r'sec[\s\-_]*filing',
+        r'email[\s\-_]*alert',
+        r'privacy[\s\-_]*notice',
+        r'subsidiar',
+        r'credit[\s\-_]*rating',
+        r'analyst[\s\-_]*report',
+        r'research[\s\-_]*report',
+        r'research[\s\-_]*analyst',
+        r'investor[\s\-_]*relation',
+        r'/ir/',
+        r'/investors/',
+        r'annual[\s\-_]*general[\s\-_]*meeting',
     ]
 
     @classmethod
-    def classify_url(cls, url):
+    def _matches_in_scope_override(cls, url_lower: str) -> bool:
+        for pat in cls.IN_SCOPE_OVERRIDE_PATTERNS:
+            if re.search(pat, url_lower, re.IGNORECASE):
+                return True
+        return False
+
+    @classmethod
+    def classify_url(cls, url: str):
         """
-        Classify a URL into: 'PDF', 'HTML', 'Both', 'Out of Scope', or 'Unclassified'.
         Returns (classification, confidence, matched_pattern)
+        classification: 'PDF' | 'HTML' | 'Both' | 'Out of Scope' | 'Unclassified'
         """
         if not isinstance(url, str):
             return "Unclassified", "low", ""
@@ -485,20 +600,24 @@ class DocTypeClassifier:
         parsed = urlparse(url)
         path_lower = parsed.path.lower()
 
-        # --- Step 1: Check Out of Scope first ---
-        for pat in cls.OOS_PATH_PATTERNS:
-            if re.search(pat, path_lower):
-                return "Out of Scope", "high", pat
-        for kw in cls.OUT_OF_SCOPE_KEYWORDS:
-            if re.search(kw, url_lower):
-                return "Out of Scope", "high", kw
+        # Step 0: Blocked domains
+        if is_blocked_domain(url):
+            return "Out of Scope", "high", "blocked domain (s3.amazonaws.com)"
 
-        # --- Step 2: Check file extension ---
+        # Step 1: OOS check — but respect in-scope overrides
+        if not cls._matches_in_scope_override(url_lower):
+            for pat in cls.OOS_PATH_PATTERNS:
+                if re.search(pat, path_lower):
+                    return "Out of Scope", "high", pat
+            for kw in cls.OUT_OF_SCOPE_KEYWORDS:
+                if re.search(kw, url_lower):
+                    return "Out of Scope", "high", kw
+
+        # Step 2: File extension
         if path_lower.endswith('.pdf'):
             return "PDF", "high", ".pdf extension"
 
-        # --- Step 3: Check keyword patterns ---
-        # PDF only
+        # Step 3: Keyword patterns
         for kw in cls.PDF_ONLY_KEYWORDS:
             if re.search(kw, url_lower):
                 return "PDF", "medium", kw
@@ -506,7 +625,6 @@ class DocTypeClassifier:
             if re.search(pat, path_lower):
                 return "PDF", "medium", pat
 
-        # HTML only
         for kw in cls.HTML_ONLY_KEYWORDS:
             if re.search(kw, url_lower):
                 return "HTML", "medium", kw
@@ -514,7 +632,6 @@ class DocTypeClassifier:
             if re.search(pat, path_lower):
                 return "HTML", "medium", pat
 
-        # Both
         for kw in cls.BOTH_KEYWORDS:
             if re.search(kw, url_lower):
                 return "Both", "medium", kw
@@ -522,23 +639,14 @@ class DocTypeClassifier:
             if re.search(pat, path_lower):
                 return "Both", "medium", pat
 
-        # --- Step 4: Default - Unclassified ---
         return "Unclassified", "low", ""
 
     @classmethod
-    def is_in_scope(cls, url, check_mode):
-        """
-        Check if URL is in scope for the given check mode.
-        check_mode: 'PDF', 'HTML', or 'Both'
-        Returns True if the URL is relevant for the selected mode.
-        """
+    def is_in_scope(cls, url: str, check_mode: str) -> bool:
         classification, _, _ = cls.classify_url(url)
-
         if classification == "Out of Scope":
             return False
-
         if check_mode == "Both":
-            # Everything except Out of Scope
             return True
         elif check_mode == "PDF":
             return classification in ("PDF", "Both", "Unclassified")
@@ -562,7 +670,7 @@ class URLExtractor:
         for match in matches:
             cleaned = match.rstrip(',;|')
             cleaned = re.sub(r'\}+$', '', cleaned)
-            if cleaned and len(cleaned) > 10:
+            if cleaned and len(cleaned) > 10 and not is_blocked_domain(cleaned):
                 urls.append(cleaned)
         return urls
 
@@ -618,6 +726,8 @@ class DomainUtil:
         for url in all_http_urls:
             url = url.strip()
             if not url.startswith('http'):
+                continue
+            if is_blocked_domain(url):
                 continue
             root = DomainUtil.get_domain_root(url)
             norm = DomainUtil.get_normalized_domain(url)
@@ -676,6 +786,8 @@ class ConcurrentDomainCrawler:
 
     def _is_valid_url(self, url, allowed_domains):
         try:
+            if is_blocked_domain(url):
+                return False
             parsed = urlparse(url)
             if not parsed.scheme or parsed.scheme not in ('http', 'https'):
                 return False
@@ -727,7 +839,9 @@ class ConcurrentDomainCrawler:
             for a in soup.find_all('a', href=True):
                 href = a['href'].strip()
                 if href and not href.startswith('#') and not href.startswith('javascript:'):
-                    links.append(urljoin(url, href))
+                    full = urljoin(url, href)
+                    if not is_blocked_domain(full):
+                        links.append(full)
         except Exception:
             pass
         return links
@@ -858,10 +972,11 @@ class URLMatcher:
             regex_part = m.group(2).strip()
             if not regex_part:
                 continue
-            if regex_part.startswith('(') and regex_part.endswith(')'):
-                regex_part_inner = regex_part[1:-1]
-            else:
-                regex_part_inner = regex_part
+            regex_part_inner = (
+                regex_part[1:-1]
+                if regex_part.startswith('(') and regex_part.endswith(')')
+                else regex_part
+            )
             try:
                 if re.search(regex_part, parsed_disc.path):
                     return True, f"Regex: {pat_str[:60]}"
@@ -918,14 +1033,10 @@ def parse_url_list(text):
 
 
 def get_classification_color(cls):
-    colors = {
-        "PDF": "🔴",
-        "HTML": "🔵",
-        "Both": "🟣",
-        "Out of Scope": "⚫",
-        "Unclassified": "⚪",
-    }
-    return colors.get(cls, "⚪")
+    return {
+        "PDF": "🔴", "HTML": "🔵", "Both": "🟣",
+        "Out of Scope": "⚫", "Unclassified": "⚪",
+    }.get(cls, "⚪")
 
 
 def get_classification_badge(cls):
@@ -944,10 +1055,12 @@ def get_classification_badge(cls):
 # =============================================================================
 def main():
     st.title("🔍 Missing URL Identifier")
-    st.markdown("**Dual-module input** → Crawl domains → Find missing URLs → Classified by PDF / HTML scope")
+    st.markdown(
+        "**Dual-module input** → Crawl domains → Find missing URLs → "
+        "Classified by PDF / HTML scope"
+    )
     st.markdown("---")
 
-    # --- Instructions ---
     with st.expander("ℹ️ How It Works", expanded=False):
         st.markdown("""
         **Two Input Modules:**
@@ -960,25 +1073,33 @@ def main():
         - **HTML Only**: Finds missing URLs relevant to HTML page types
         - **Both (Combined)**: Finds ALL missing URLs across both scopes
 
-        **Process:**
-        1. URLs from both modules are combined
-        2. Unique domain roots are identified and crawled
-        3. Each discovered URL is classified by document type (PDF/HTML/Both/Out of Scope)
-        4. Missing URLs are filtered based on your selected check mode
-        5. Results show which module (PDF/HTML) each missing URL is relevant to
+        **Keyword Exclusion Box:**
+        - Enter keywords separated by `|` to hide irrelevant URLs from the results table
+        - Hyphens / spaces / underscores are interchangeable in matching
+          (e.g. `email-alerts` also matches `email alerts` and `email_alerts`)
+        - Excluded URLs are removed from the Missing URLs table only — the raw data is preserved
+        - Click **Apply Exclusions** to activate; **Clear Exclusions** to reset
 
-        **Document Classification** is based on 100+ document type patterns covering:
-        Presentations, Press Releases, Filings, ESG, Sector Content, Company Info, Business Updates, Products & Services
+        **Blocked Domains:**
+        - `s3.amazonaws.com` (and all subdomains) are **never** crawled or shown as missing URLs
+
+        **In-Scope IR content (never marked Out of Scope):**
+        SEC Filings · Email Alerts · Privacy Notices (IR) · Subsidiary pages ·
+        Credit Ratings · Research / Analyst Reports · Investor Relations
+
+        **Document Classification** is based on 100+ patterns covering:
+        Presentations, Press Releases, Filings, ESG, Sector Content, Company Info,
+        Business Updates, Products & Services
         """)
 
-    # --- Session State ---
+    # Session state initialisation
     for key in ['crawl_summary', 'missing_df', 'parsed_pdf_urls', 'parsed_html_urls',
-                'combined_urls', 'domain_map', 'check_mode']:
+                'combined_urls', 'domain_map', 'check_mode', 'exclusion_keywords']:
         if key not in st.session_state:
             st.session_state[key] = None
 
     # =================================================================
-    # CHECK MODE SELECTOR
+    # CHECK MODE
     # =================================================================
     st.subheader("🎯 Check Mode")
     check_mode = st.radio(
@@ -987,13 +1108,9 @@ def main():
         horizontal=True,
         index=0,
         key="check_mode_radio",
-        help="PDF Only = finds missing PDF-relevant pages | HTML Only = finds missing HTML pages | Both = everything"
     )
-
-    # Map display to internal
     mode_map = {"Both (Combined)": "Both", "PDF Only": "PDF", "HTML Only": "HTML"}
     selected_mode = mode_map[check_mode]
-
     st.markdown("---")
 
     # =================================================================
@@ -1002,25 +1119,25 @@ def main():
     st.subheader("📝 Input Modules")
 
     if selected_mode == "PDF":
-        st.info("🔴 **PDF Mode**: Only the PDF module input is active. HTML input will be ignored for missing URL detection.")
+        st.info("🔴 **PDF Mode**: Only the PDF module is active.")
     elif selected_mode == "HTML":
-        st.info("🔵 **HTML Mode**: Only the HTML module input is active. PDF input will be ignored for missing URL detection.")
+        st.info("🔵 **HTML Mode**: Only the HTML module is active.")
     else:
-        st.info("🟣 **Combined Mode**: Both modules are active. All URLs are combined for analysis.")
+        st.info("🟣 **Combined Mode**: Both modules are active.")
 
-    # Two columns for the two modules
     col_pdf, col_html = st.columns(2)
 
     with col_pdf:
         st.markdown(
-            '<div class="module-header pdf-header">🔴 PDF Module — URLs for PDF Document Extraction</div>',
+            '<div class="module-header pdf-header">'
+            '🔴 PDF Module — URLs for PDF Document Extraction</div>',
             unsafe_allow_html=True
         )
         pdf_enabled = selected_mode in ("PDF", "Both")
         pdf_input = st.text_area(
             "Paste PDF extraction URLs (JSON array or one per line):",
             height=250,
-            placeholder='[\n  "https://ir.company.com/presentations",\n  "${miny=:2019}json:xhr:https://ir.company.com/feed/...",\n  "https://company.com/annual-reports"\n]',
+            placeholder='[\n  "https://ir.company.com/presentations",\n  "https://company.com/annual-reports"\n]',
             key="pdf_input_area",
             disabled=not pdf_enabled,
         )
@@ -1029,14 +1146,15 @@ def main():
 
     with col_html:
         st.markdown(
-            '<div class="module-header html-header">🔵 HTML Module — URLs for HTML Page Extraction</div>',
+            '<div class="module-header html-header">'
+            '🔵 HTML Module — URLs for HTML Page Extraction</div>',
             unsafe_allow_html=True
         )
         html_enabled = selected_mode in ("HTML", "Both")
         html_input = st.text_area(
             "Paste HTML page URLs (JSON array or one per line):",
             height=250,
-            placeholder='[\n  "https://company.com/about-us",\n  "https://company.com/sustainability/",\n  "https://company.com/products/"\n]',
+            placeholder='[\n  "https://company.com/about-us",\n  "https://company.com/sustainability/"\n]',
             key="html_input_area",
             disabled=not html_enabled,
         )
@@ -1044,9 +1162,7 @@ def main():
             st.caption("⏸️ Disabled in PDF-only mode")
 
     st.markdown("")
-
-    # Buttons
-    bcol1, bcol2 = st.columns([2, 2])
+    bcol1, bcol2 = st.columns(2)
     with bcol1:
         parse_btn = st.button("📋 Parse & Analyze URLs", type="primary", use_container_width=True)
     with bcol2:
@@ -1054,19 +1170,16 @@ def main():
 
     if clear_btn:
         for key in ['crawl_summary', 'missing_df', 'parsed_pdf_urls', 'parsed_html_urls',
-                     'combined_urls', 'domain_map']:
+                    'combined_urls', 'domain_map', 'exclusion_keywords']:
             st.session_state[key] = None
         st.rerun()
 
     # =================================================================
-    # PARSE INPUTS
+    # PARSE
     # =================================================================
     if parse_btn:
-        pdf_urls = []
-        html_urls = []
-        errors = []
+        pdf_urls, html_urls, errors = [], [], []
 
-        # Parse PDF input
         if pdf_enabled and pdf_input.strip():
             parsed, err = parse_url_list(pdf_input)
             if err:
@@ -1075,7 +1188,6 @@ def main():
                 pdf_urls = parsed
                 st.session_state.parsed_pdf_urls = parsed
 
-        # Parse HTML input
         if html_enabled and html_input.strip():
             parsed, err = parse_url_list(html_input)
             if err:
@@ -1084,32 +1196,25 @@ def main():
                 html_urls = parsed
                 st.session_state.parsed_html_urls = parsed
 
-        if errors:
-            for e in errors:
-                st.error(f"❌ {e}")
+        for e in errors:
+            st.error(f"❌ {e}")
 
-        # Check we have at least something
         if not pdf_urls and not html_urls:
             if not errors:
                 st.warning("⚠️ Please paste URLs in at least one module!")
         else:
-            # Combine
             combined = pdf_urls + html_urls
             st.session_state.combined_urls = combined
             st.session_state.domain_map = DomainUtil.extract_unique_domain_roots(combined)
             st.session_state.crawl_summary = None
             st.session_state.missing_df = None
-
-            pdf_count = len(pdf_urls)
-            html_count = len(html_urls)
-            total = len(combined)
             st.success(
-                f"✅ Parsed **{total}** total entries "
-                f"(🔴 PDF: {pdf_count} | 🔵 HTML: {html_count})"
+                f"✅ Parsed **{len(combined)}** total entries "
+                f"(🔴 PDF: {len(pdf_urls)} | 🔵 HTML: {len(html_urls)})"
             )
 
     # =================================================================
-    # SHOW PARSED INFO
+    # PARSED INFO
     # =================================================================
     combined = st.session_state.combined_urls
     domain_map = st.session_state.domain_map
@@ -1122,54 +1227,51 @@ def main():
 
         all_http = URLExtractor.get_all_plain_http_urls(combined)
         regex_pats = URLExtractor.extract_regex_patterns(combined)
-
         pdf_http = URLExtractor.get_all_plain_http_urls(pdf_urls_parsed) if pdf_urls_parsed else []
         html_http = URLExtractor.get_all_plain_http_urls(html_urls_parsed) if html_urls_parsed else []
         pdf_regex = URLExtractor.extract_regex_patterns(pdf_urls_parsed) if pdf_urls_parsed else []
         html_regex = URLExtractor.extract_regex_patterns(html_urls_parsed) if html_urls_parsed else []
 
         c1, c2, c3, c4, c5 = st.columns(5)
-        with c1:
-            st.metric("Total Entries", len(combined))
-        with c2:
-            st.metric("🔴 PDF Entries", len(pdf_urls_parsed))
-        with c3:
-            st.metric("🔵 HTML Entries", len(html_urls_parsed))
-        with c4:
-            st.metric("HTTP URLs Found", len(all_http))
-        with c5:
-            st.metric("Unique Domains", len(domain_map))
+        c1.metric("Total Entries", len(combined))
+        c2.metric("🔴 PDF Entries", len(pdf_urls_parsed))
+        c3.metric("🔵 HTML Entries", len(html_urls_parsed))
+        c4.metric("HTTP URLs Found", len(all_http))
+        c5.metric("Unique Domains", len(domain_map))
 
-        # Module breakdown
         mod_col1, mod_col2 = st.columns(2)
         with mod_col1:
             with st.expander(f"🔴 PDF Module Details ({len(pdf_urls_parsed)} entries)", expanded=False):
                 if pdf_urls_parsed:
-                    st.write(f"**HTTP URLs:** {len(pdf_http)}")
-                    st.write(f"**Regex Patterns:** {len(pdf_regex)}")
+                    st.write(f"**HTTP URLs:** {len(pdf_http)} | **Regex Patterns:** {len(pdf_regex)}")
                     for i, u in enumerate(pdf_urls_parsed, 1):
-                        st.text(f"{i:3d}. {u[:120]}{'...' if len(str(u)) > 120 else ''}")
+                        st.text(f"{i:3d}. {str(u)[:120]}{'...' if len(str(u)) > 120 else ''}")
                 else:
                     st.caption("No URLs in PDF module")
 
         with mod_col2:
             with st.expander(f"🔵 HTML Module Details ({len(html_urls_parsed)} entries)", expanded=False):
                 if html_urls_parsed:
-                    st.write(f"**HTTP URLs:** {len(html_http)}")
-                    st.write(f"**Regex Patterns:** {len(html_regex)}")
+                    st.write(f"**HTTP URLs:** {len(html_http)} | **Regex Patterns:** {len(html_regex)}")
                     for i, u in enumerate(html_urls_parsed, 1):
-                        st.text(f"{i:3d}. {u[:120]}{'...' if len(str(u)) > 120 else ''}")
+                        st.text(f"{i:3d}. {str(u)[:120]}{'...' if len(str(u)) > 120 else ''}")
                 else:
                     st.caption("No URLs in HTML module")
 
-        # Domain table
         if domain_map:
+            # Warn about blocked domains
+            all_raw_http = URLExtractor.get_all_plain_http_urls(combined)
+            blocked_found = [u for u in all_raw_http if is_blocked_domain(u)]
+            if blocked_found:
+                st.warning(
+                    f"⚠️ **{len(blocked_found)} URL(s) from blocked domains "
+                    f"(s3.amazonaws.com) were detected and excluded from crawling.**"
+                )
+
             st.markdown("**🌐 Domains to Crawl:**")
             domain_display = []
             for norm_domain, root_url in sorted(domain_map.items()):
-                count = sum(1 for u in all_http
-                            if DomainUtil.get_normalized_domain(u) == norm_domain)
-                # Check which module(s) have URLs for this domain
+                count = sum(1 for u in all_http if DomainUtil.get_normalized_domain(u) == norm_domain)
                 in_pdf = any(DomainUtil.get_normalized_domain(u) == norm_domain for u in pdf_http)
                 in_html = any(DomainUtil.get_normalized_domain(u) == norm_domain for u in html_http)
                 modules = []
@@ -1187,7 +1289,6 @@ def main():
         else:
             st.warning("⚠️ No HTTP URLs found. Cannot crawl.")
 
-        # Regex patterns
         if regex_pats:
             with st.expander(f"🔤 Regex Patterns ({len(regex_pats)})", expanded=False):
                 for rp in regex_pats:
@@ -1195,12 +1296,15 @@ def main():
                     st.code(f"{source} {rp}", language=None)
 
         # =============================================================
-        # CRAWL SECTION
+        # CRAWL
         # =============================================================
         if domain_map:
             st.markdown("---")
             mode_emoji = {"PDF": "🔴", "HTML": "🔵", "Both": "🟣"}
-            st.header(f"🕷️ Crawl & Find Missing URLs {mode_emoji.get(selected_mode, '')} [{selected_mode} Mode]")
+            st.header(
+                f"🕷️ Crawl & Find Missing URLs "
+                f"{mode_emoji.get(selected_mode, '')} [{selected_mode} Mode]"
+            )
 
             with st.expander("⚙️ Crawl Settings", expanded=False):
                 s1, s2, s3, s4 = st.columns(4)
@@ -1211,7 +1315,7 @@ def main():
                 with s3:
                     workers = st.slider("Threads", 5, 100, 50, 5, key="cw")
                 with s4:
-                    delay = st.slider("Delay (sec)", 0.0, 1.0, 0.1, 0.05, key="cdl")
+                    delay_val = st.slider("Delay (sec)", 0.0, 1.0, 0.1, 0.05, key="cdl")
 
             crawl_btn = st.button(
                 f"🔎 Start Crawl — Find Missing {selected_mode} URLs",
@@ -1223,7 +1327,7 @@ def main():
             if crawl_btn:
                 crawler = ConcurrentDomainCrawler(
                     max_depth=depth, max_pages=pages,
-                    max_workers=workers, delay=delay
+                    max_workers=workers, delay=delay_val
                 )
                 prog = st.progress(0)
                 stat = st.empty()
@@ -1248,13 +1352,8 @@ def main():
                     f"across **{len(domain_map)}** domain(s)"
                 )
 
-                # --- Match & Classify ---
                 all_http_urls = URLExtractor.get_all_plain_http_urls(combined)
                 regex_patterns = URLExtractor.extract_regex_patterns(combined)
-
-                # Build sets for module membership
-                pdf_http_set = set(URLMatcher.normalize_for_comparison(u) for u in pdf_http)
-                html_http_set = set(URLMatcher.normalize_for_comparison(u) for u in html_http)
 
                 missing_rows = []
                 covered_count = 0
@@ -1262,18 +1361,17 @@ def main():
                 filtered_out_count = 0
 
                 for url, info in sorted(discovered.items()):
-                    # Check coverage
-                    covered, reason = URLMatcher.is_url_covered(
-                        url, all_http_urls, regex_patterns
-                    )
+                    if is_blocked_domain(url):
+                        oos_count += 1
+                        continue
+
+                    covered, reason = URLMatcher.is_url_covered(url, all_http_urls, regex_patterns)
                     if covered:
                         covered_count += 1
                         continue
 
-                    # Classify document type
                     doc_class, confidence, matched_pat = DocTypeClassifier.classify_url(url)
 
-                    # Check if in scope for selected mode
                     if not DocTypeClassifier.is_in_scope(url, selected_mode):
                         if doc_class == "Out of Scope":
                             oos_count += 1
@@ -1281,7 +1379,6 @@ def main():
                             filtered_out_count += 1
                         continue
 
-                    # Determine which module(s) this URL would belong to
                     source_modules = []
                     if doc_class in ("PDF", "Both", "Unclassified"):
                         source_modules.append("PDF")
@@ -1312,7 +1409,7 @@ def main():
                 st.session_state.missing_df = build_missing_df(missing_rows)
 
         # =============================================================
-        # DISPLAY RESULTS
+        # RESULTS
         # =============================================================
         if st.session_state.crawl_summary is not None:
             cs = st.session_state.crawl_summary
@@ -1321,52 +1418,153 @@ def main():
                 st.warning("⚠️ Crawl data corrupted. Please re-run.")
                 st.session_state.crawl_summary = None
                 st.session_state.missing_df = None
-            else:
+                st.stop()
+
+            st.markdown("---")
+            mode_label = cs.get("check_mode", "Both")
+            mode_emoji_map = {"PDF": "🔴", "HTML": "🔵", "Both": "🟣"}
+            st.subheader(
+                f"📊 Results — {mode_emoji_map.get(mode_label, '')} {mode_label} Mode"
+            )
+
+            x1, x2, x3, x4, x5 = st.columns(5)
+            x1.metric("Discovered", cs["total_discovered"])
+            x2.metric("Covered", cs["covered_count"])
+            x3.metric("🔴 Missing (raw)", cs["missing_count"])
+            x4.metric("Out of Scope", cs["oos_count"])
+            x5.metric("Filtered (mode)", cs["filtered_out_count"])
+
+            df = st.session_state.missing_df
+
+            if df is not None and not df.empty:
+
+                # =================================================
+                # ANALYST KEYWORD EXCLUSION BOX
+                # =================================================
                 st.markdown("---")
-                mode_label = cs.get("check_mode", "Both")
-                mode_emoji_map = {"PDF": "🔴", "HTML": "🔵", "Both": "🟣"}
-                st.subheader(f"📊 Results — {mode_emoji_map.get(mode_label, '')} {mode_label} Mode")
+                st.markdown(
+                    '<div class="exclude-box">'
+                    '<b>🔑 Analyst Keyword Exclusion</b><br>'
+                    'Enter keywords separated by <code>|</code> to remove matching URLs '
+                    'from the Missing URLs table. '
+                    'Hyphens, spaces, and underscores are treated as interchangeable '
+                    '(e.g. <code>email-alerts</code> also matches <code>email alerts</code> '
+                    'and <code>email_alerts</code>).<br><br>'
+                    '<i>Examples: '
+                    '<code>sec-filings | email-alerts | privacy-notice | subsidiary | '
+                    'credit-ratings | analyst-report | research/analyst</code>'
+                    '</i>'
+                    '</div>',
+                    unsafe_allow_html=True
+                )
 
-                x1, x2, x3, x4, x5 = st.columns(5)
-                with x1:
-                    st.metric("Discovered", cs["total_discovered"])
-                with x2:
-                    st.metric("Covered", cs["covered_count"])
-                with x3:
-                    st.metric("🔴 Missing", cs["missing_count"])
-                with x4:
-                    st.metric("Out of Scope", cs["oos_count"])
-                with x5:
-                    st.metric("Filtered (mode)", cs["filtered_out_count"])
+                excl_col1, excl_col2, excl_col3 = st.columns([4, 1, 1])
+                with excl_col1:
+                    exclusion_input = st.text_input(
+                        "Keywords to exclude (separate with |):",
+                        value=st.session_state.exclusion_keywords or "",
+                        placeholder=(
+                            "e.g.  sec-filings | email-alerts | privacy-notice | "
+                            "subsidiary | credit-ratings | analyst-report"
+                        ),
+                        key="exclusion_input_box",
+                        label_visibility="collapsed",
+                    )
+                with excl_col2:
+                    apply_excl = st.button(
+                        "✂️ Apply",
+                        use_container_width=True,
+                        key="apply_excl_btn"
+                    )
+                with excl_col3:
+                    clear_excl = st.button(
+                        "🔄 Clear",
+                        use_container_width=True,
+                        key="clear_excl_btn"
+                    )
 
-                df = st.session_state.missing_df
+                if apply_excl:
+                    st.session_state.exclusion_keywords = exclusion_input.strip()
+                    st.rerun()
 
-                if df is not None and not df.empty and len(df) > 0:
+                if clear_excl:
+                    st.session_state.exclusion_keywords = None
+                    st.rerun()
 
+                # Build active exclusion regex
+                active_excl_kw = st.session_state.exclusion_keywords or ""
+                excl_regex = build_exclusion_regex(active_excl_kw)
+
+                if excl_regex is not None:
+                    mask_excl = df["missing_url"].apply(
+                        lambda u: url_matches_exclusion(u, excl_regex)
+                    )
+                    df_display = df[~mask_excl].copy()
+                    excl_count = int(mask_excl.sum())
+
+                    kw_list = [k.strip() for k in active_excl_kw.split("|") if k.strip()]
+                    tags_html = " ".join(
+                        f'<span class="keyword-tag">✂️ {k}</span>' for k in kw_list
+                    )
                     st.markdown(
-                        f'<div class="warning-box">'
-                        f'<h3>⚠️ {len(df)} Missing URLs Found ({mode_label} scope)</h3>'
-                        f'<p>These URLs exist on the domain but are NOT in your added URL list.</p>'
-                        f'</div>',
+                        f"**Active exclusions ({len(kw_list)} keyword(s) | "
+                        f"{excl_count} URLs removed):** {tags_html}",
                         unsafe_allow_html=True
                     )
 
+                    if excl_count > 0:
+                        with st.expander(
+                            f"👁️ View {excl_count} excluded URL(s)", expanded=False
+                        ):
+                            excl_urls = df[mask_excl]["missing_url"].tolist()
+                            for eu in excl_urls:
+                                st.markdown(
+                                    f'<a href="{eu}" target="_blank">{eu}</a>',
+                                    unsafe_allow_html=True
+                                )
+                else:
+                    df_display = df.copy()
+                    excl_count = 0
+                    if active_excl_kw:
+                        st.warning(
+                            "⚠️ Could not parse exclusion keywords. "
+                            "Check for invalid regex characters."
+                        )
+
+                st.markdown("---")
+                effective_missing = len(df_display)
+
+                st.markdown(
+                    f'<div class="warning-box">'
+                    f'<h3>⚠️ {effective_missing} Missing URLs Found ({mode_label} scope)</h3>'
+                    f'<p>These URLs exist on the domain but are NOT in your added URL list. '
+                    f'{excl_count} URLs hidden by keyword exclusions.</p>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+
+                if df_display.empty:
+                    st.success(
+                        "✅ All remaining missing URLs have been excluded "
+                        "by your keyword filters."
+                    )
+                else:
                     # --- FILTERS ---
                     st.markdown("**🔧 Filter Results:**")
                     fc1, fc2, fc3, fc4 = st.columns(4)
 
                     with fc1:
-                        domain_opts = sorted(df["domain"].unique())
+                        domain_opts = sorted(df_display["domain"].unique())
                         domain_filter = st.multiselect(
                             "Domain:", domain_opts, default=domain_opts, key="df_domain"
                         )
                     with fc2:
-                        class_opts = sorted(df["doc_classification"].unique())
+                        class_opts = sorted(df_display["doc_classification"].unique())
                         class_filter = st.multiselect(
                             "Classification:", class_opts, default=class_opts, key="df_class"
                         )
                     with fc3:
-                        depth_opts = sorted(df["depth"].unique())
+                        depth_opts = sorted(df_display["depth"].unique())
                         depth_filter = st.multiselect(
                             "Depth:", depth_opts, default=depth_opts, key="df_depth"
                         )
@@ -1376,11 +1574,10 @@ def main():
                             placeholder="e.g. /news/ or /investor"
                         )
 
-                    # Apply filters
-                    filtered = df[
-                        (df["domain"].isin(domain_filter)) &
-                        (df["doc_classification"].isin(class_filter)) &
-                        (df["depth"].isin(depth_filter))
+                    filtered = df_display[
+                        (df_display["domain"].isin(domain_filter)) &
+                        (df_display["doc_classification"].isin(class_filter)) &
+                        (df_display["depth"].isin(depth_filter))
                     ]
                     if search_text.strip():
                         filtered = filtered[
@@ -1389,19 +1586,24 @@ def main():
                             )
                         ]
 
-                    st.markdown(f"**Showing {len(filtered)} of {len(df)} missing URLs**")
+                    removed_by_excl = cs['missing_count'] - effective_missing
+                    st.markdown(
+                        f"**Showing {len(filtered)} of {effective_missing} missing URLs** "
+                        f"*(keyword exclusions removed {removed_by_excl})*"
+                    )
 
                     if not filtered.empty:
-                        # Build display version
-                        display_df = filtered.copy()
-                        display_df["missing_url"] = display_df["missing_url"].apply(make_clickable)
-                        display_df["seed_url"] = display_df["seed_url"].apply(make_clickable)
-                        display_df["doc_classification"] = display_df["doc_classification"].apply(
-                            lambda x: get_classification_badge(x)
+                        disp = filtered.copy()
+                        disp["missing_url"] = disp["missing_url"].apply(make_clickable)
+                        disp["seed_url"] = disp["seed_url"].apply(make_clickable)
+                        disp["doc_classification"] = disp["doc_classification"].apply(
+                            get_classification_badge
                         )
-                        display_df["source_module"] = display_df["source_module"].apply(
-                            lambda x: x.replace("PDF", "🔴 PDF").replace("HTML", "🔵 HTML")
-                            if isinstance(x, str) else x
+                        disp["source_module"] = disp["source_module"].apply(
+                            lambda x: (
+                                x.replace("PDF", "🔴 PDF").replace("HTML", "🔵 HTML")
+                                if isinstance(x, str) else x
+                            )
                         )
 
                         rename_map = {
@@ -1414,22 +1616,18 @@ def main():
                             "matched_pattern": "Pattern Match",
                             "source_module": "Module",
                         }
-                        display_df = display_df.rename(columns=rename_map)
+                        disp = disp.rename(columns=rename_map)
                         filtered_renamed = filtered.rename(columns=rename_map)
 
-                        # Sort
                         sort_options = ["Domain", "Depth", "Type", "Module", "Missing URL"]
                         sort_col = st.selectbox("Sort by:", sort_options, index=0, key="sort_col")
-
                         sorted_idx = filtered_renamed.sort_values(
                             sort_col, key=lambda x: x.astype(str)
                         ).index
-                        display_df = display_df.loc[sorted_idx].reset_index(drop=True)
-                        display_df.index = display_df.index + 1
-                        display_df.index.name = "#"
+                        disp = disp.loc[sorted_idx].reset_index(drop=True)
+                        disp.index = disp.index + 1
+                        disp.index.name = "#"
 
-                        # Show compact table (hide low-value columns)
-                        show_cols = ["Domain", "Missing URL", "Depth", "Type", "Module"]
                         with st.expander("📋 Show/Hide Columns", expanded=False):
                             all_cols = list(rename_map.values())
                             show_cols = st.multiselect(
@@ -1437,28 +1635,27 @@ def main():
                                 default=["Domain", "Missing URL", "Depth", "Type", "Module"],
                                 key="visible_cols"
                             )
+                        show_cols = show_cols if show_cols else ["Domain", "Missing URL", "Depth", "Type", "Module"]
+                        st.markdown(
+                            disp[show_cols].to_html(escape=False, index=True),
+                            unsafe_allow_html=True
+                        )
 
-                        if show_cols:
-                            st.markdown(
-                                display_df[show_cols].to_html(escape=False, index=True),
-                                unsafe_allow_html=True
-                            )
-
-                    # --- BREAKDOWNS ---
-                    st.markdown("---")
+                # --- BREAKDOWNS ---
+                st.markdown("---")
+                if not df_display.empty:
                     bd1, bd2, bd3 = st.columns(3)
 
                     with bd1:
                         st.markdown("### 📊 By Domain")
-                        dc = df["domain"].value_counts().reset_index()
+                        dc = df_display["domain"].value_counts().reset_index()
                         dc.columns = ["Domain", "Count"]
                         st.table(dc)
 
                     with bd2:
                         st.markdown("### 📊 By Classification")
-                        cc = df["doc_classification"].value_counts().reset_index()
+                        cc = df_display["doc_classification"].value_counts().reset_index()
                         cc.columns = ["Classification", "Count"]
-                        # Add emoji
                         cc["Classification"] = cc["Classification"].apply(
                             lambda x: f"{get_classification_color(x)} {x}"
                         )
@@ -1466,140 +1663,127 @@ def main():
 
                     with bd3:
                         st.markdown("### 📊 By Module")
-                        mc = df["source_module"].value_counts().reset_index()
+                        mc = df_display["source_module"].value_counts().reset_index()
                         mc.columns = ["Module", "Count"]
                         st.table(mc)
 
-                    # Depth chart
                     st.markdown("### 📊 Missing by Depth")
-                    dpc = df["depth"].value_counts().sort_index().reset_index()
+                    dpc = df_display["depth"].value_counts().sort_index().reset_index()
                     dpc.columns = ["Depth", "Count"]
                     st.bar_chart(dpc.set_index("Depth"))
 
-                    # --- DOWNLOADS ---
-                    st.markdown("### 📥 Download Missing URLs")
-                    download_df = df.rename(columns={
-                        "domain": "Domain",
-                        "seed_url": "Seed URL",
-                        "missing_url": "Missing URL",
-                        "depth": "Depth",
-                        "doc_classification": "Doc Type",
-                        "confidence": "Confidence",
-                        "matched_pattern": "Pattern Match",
-                        "source_module": "Module",
-                    })
+                # --- DOWNLOADS ---
+                st.markdown("### 📥 Download Missing URLs")
+                dl_rename = {
+                    "domain": "Domain", "seed_url": "Seed URL",
+                    "missing_url": "Missing URL", "depth": "Depth",
+                    "doc_classification": "Doc Type", "confidence": "Confidence",
+                    "matched_pattern": "Pattern Match", "source_module": "Module",
+                }
+                download_df = df_display.rename(columns=dl_rename)
+                ts = datetime.now().strftime('%Y%m%d_%H%M%S')
 
-                    d1, d2, d3, d4 = st.columns(4)
-                    with d1:
-                        st.download_button(
-                            "📥 Full CSV",
-                            data=download_df.to_csv(index=False),
-                            file_name=f"missing_urls_{selected_mode}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                            mime="text/csv",
-                            use_container_width=True
-                        )
-                    with d2:
-                        st.download_button(
-                            "📥 Full JSON",
-                            data=download_df.to_json(orient="records", indent=2),
-                            file_name=f"missing_urls_{selected_mode}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                            mime="application/json",
-                            use_container_width=True
-                        )
-                    with d3:
-                        plain = "\n".join(df["missing_url"].tolist())
-                        st.download_button(
-                            "📥 URLs Only (TXT)",
-                            data=plain,
-                            file_name=f"missing_urls_{selected_mode}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-                            mime="text/plain",
-                            use_container_width=True
-                        )
-                    with d4:
-                        # Filtered download
-                        if not filtered.empty:
-                            filt_dl = filtered.rename(columns={
-                                "domain": "Domain", "seed_url": "Seed URL",
-                                "missing_url": "Missing URL", "depth": "Depth",
-                                "doc_classification": "Doc Type", "confidence": "Confidence",
-                                "matched_pattern": "Pattern Match", "source_module": "Module",
-                            })
+                d1, d2, d3, d4 = st.columns(4)
+                with d1:
+                    st.download_button(
+                        "📥 Full CSV (post-exclusion)",
+                        data=download_df.to_csv(index=False),
+                        file_name=f"missing_urls_{selected_mode}_{ts}.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
+                with d2:
+                    st.download_button(
+                        "📥 Full JSON (post-exclusion)",
+                        data=download_df.to_json(orient="records", indent=2),
+                        file_name=f"missing_urls_{selected_mode}_{ts}.json",
+                        mime="application/json",
+                        use_container_width=True
+                    )
+                with d3:
+                    plain = "\n".join(df_display["missing_url"].tolist())
+                    st.download_button(
+                        "📥 URLs Only (TXT)",
+                        data=plain,
+                        file_name=f"missing_urls_{selected_mode}_{ts}.txt",
+                        mime="text/plain",
+                        use_container_width=True
+                    )
+                with d4:
+                    if not df_display.empty:
+                        # filtered view download — use the last `filtered` if available
+                        try:
+                            filt_dl = filtered.rename(columns=dl_rename)
                             st.download_button(
                                 f"📥 Filtered ({len(filtered)})",
                                 data=filt_dl.to_csv(index=False),
-                                file_name=f"missing_filtered_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                                file_name=f"missing_filtered_{ts}.csv",
                                 mime="text/csv",
                                 use_container_width=True
                             )
+                        except Exception:
+                            pass
 
-                elif cs["missing_count"] == 0:
-                    st.markdown(f"""
-                        <div class="success-box">
-                            <h3>✅ No Missing URLs! ({mode_label} scope)</h3>
-                            <p>All discovered URLs relevant to <b>{mode_label}</b> document types
-                            are covered by your URL list.</p>
-                            <p><b>{cs['oos_count']}</b> URLs were excluded as Out of Scope.
-                            <b>{cs['filtered_out_count']}</b> were filtered by mode selection.</p>
-                        </div>
-                    """, unsafe_allow_html=True)
+            elif cs["missing_count"] == 0:
+                st.markdown(f"""
+                    <div class="success-box">
+                        <h3>✅ No Missing URLs! ({mode_label} scope)</h3>
+                        <p>All discovered URLs relevant to <b>{mode_label}</b> document types
+                        are covered by your URL list.</p>
+                        <p><b>{cs['oos_count']}</b> URLs were excluded as Out of Scope.
+                        <b>{cs['filtered_out_count']}</b> were filtered by mode selection.</p>
+                    </div>
+                """, unsafe_allow_html=True)
 
     # =================================================================
-    # DOCUMENT TYPE REFERENCE
+    # REFERENCE TABLE
     # =================================================================
     with st.expander("📚 Document Type Classification Reference", expanded=False):
         st.markdown("### Document Types by Category")
-
         ref_data = [
             ("**1. PRESENTATIONS**", "", ""),
-            ("Investor Day Presentations", "🔴 PDF", ""),
-            ("Earnings Presentations", "🔴 PDF", ""),
-            ("Supplementary Information", "🔴 PDF", ""),
-            ("Non-GAAP / NON-IFRS Reconciliation", "🔴 PDF", ""),
-            ("ESG / SASB Presentations", "🔴 PDF", ""),
+            ("Investor Day / Earnings Presentations", "🔴 PDF", ""),
+            ("Supplementary / Non-GAAP / Non-IFRS", "🔴 PDF", ""),
+            ("ESG / SASB / Roadshow / AGM Presentations", "🔴 PDF", ""),
             ("Letter to Shareholders", "🔴 PDF", ""),
-            ("Roadshow Presentations", "🔴 PDF", ""),
-            ("AGM Presentations", "🔴 PDF", ""),
             ("**2. PRESS RELEASES / NEWS**", "", ""),
-            ("Press Releases", "🔴 PDF", "🔵 HTML"),
-            ("News Articles", "🔴 PDF", "🔵 HTML"),
-            ("Company Announcements", "🔴 PDF", "🔵 HTML"),
-            ("Media Center / Newsroom", "🔴 PDF", "🔵 HTML"),
+            ("Press Releases / News Articles", "🔴 PDF", "🔵 HTML"),
+            ("Company Announcements / Newsroom", "🔴 PDF", "🔵 HTML"),
             ("**3. FILINGS**", "", ""),
-            ("Annual / Integrated Report", "🔴 PDF", ""),
-            ("Interim Report", "🔴 PDF", ""),
-            ("Operating Metrics / Earnings", "🔴 PDF", "🔵 HTML"),
-            ("Proxy Statements", "🔴 PDF", ""),
-            ("Shareholding Pattern", "🔴 PDF", "🔵 HTML"),
-            ("Corporate Actions", "🔴 PDF", "🔵 HTML"),
-            ("All Other Filings", "🔴 PDF", ""),
+            ("Annual / Integrated / Interim Report", "🔴 PDF", ""),
+            ("Proxy Statements / Prospectus", "🔴 PDF", ""),
+            ("SEC Filings", "🟣 Both", "🟣 Both"),
+            ("Operating Metrics / Earnings", "🟣 Both", "🟣 Both"),
+            ("Shareholding Pattern / Corporate Actions", "🟣 Both", "🟣 Both"),
             ("**4. ESG**", "", ""),
-            ("Sustainability / CSR Reports", "🔴 PDF", "🔵 HTML"),
-            ("TCFD / Climate Reports", "🔴 PDF", "🔵 HTML"),
-            ("Governance / Policies / Charters", "🔴 PDF", "🔵 HTML"),
+            ("Sustainability / CSR / TCFD / GRI / CDP", "🟣 Both", "🟣 Both"),
+            ("Governance / Policies / Charters", "🟣 Both", "🟣 Both"),
             ("ESTMA Reports", "🔴 PDF", ""),
-            ("**5. SECTOR-SPECIFIC**", "", ""),
-            ("White Papers / Case Studies", "🔴 PDF", "🔵 HTML"),
+            ("**5. INVESTOR RELATIONS (always in-scope)**", "", ""),
+            ("SEC Filings · Email Alerts · Credit Ratings", "🟣 Both", "🟣 Both"),
+            ("Research / Analyst Reports · Subsidiary pages", "🟣 Both", "🟣 Both"),
+            ("Privacy Notices (IR context)", "🟣 Both", "🟣 Both"),
+            ("**6. SECTOR-SPECIFIC**", "", ""),
+            ("White Papers / Case Studies / Factsheets", "🟣 Both", "🟣 Both"),
             ("Blogs & Insights", "", "🔵 HTML"),
             ("Prepared Remarks / Transcripts", "🔴 PDF", ""),
-            ("**6. COMPANY INFO**", "", ""),
-            ("About / History / Mission", "", "🔵 HTML"),
-            ("Leadership / Board Profiles", "", "🔵 HTML"),
+            ("**7. COMPANY INFO**", "", ""),
+            ("About / History / Leadership / Board", "", "🔵 HTML"),
             ("Partners / Suppliers / Customers", "", "🔵 HTML"),
-            ("**7. BUSINESS UPDATES**", "", ""),
-            ("All Business Updates & Reports", "🔴 PDF", "🔵 HTML"),
-            ("**8. PRODUCTS & SERVICES**", "", ""),
-            ("Product/Service Listings", "", "🔵 HTML"),
-            ("Product Launch / Specs", "🔴 PDF", "🔵 HTML"),
+            ("**8. BUSINESS UPDATES**", "", ""),
+            ("All Business Updates & Reports", "🟣 Both", "🟣 Both"),
+            ("**9. PRODUCTS & SERVICES**", "", ""),
+            ("Product / Service Listings", "", "🔵 HTML"),
+            ("Product Launch / Specs / Brochures", "🟣 Both", "🟣 Both"),
         ]
-
-        ref_df = pd.DataFrame(ref_data, columns=["Document Type", "PDF", "HTML"])
+        ref_df = pd.DataFrame(ref_data, columns=["Document Type", "PDF Scope", "HTML Scope"])
         st.table(ref_df)
 
-    # --- Footer ---
     st.markdown("---")
     st.markdown(
         '<div style="text-align:center;color:#888;padding:20px;font-size:12px;">'
-        'Missing URL Identifier v2.0 — Dual Module | PDF/HTML Classification | Domain Crawler'
+        'Missing URL Identifier v2.1 — Dual Module | PDF/HTML Classification | '
+        'Domain Crawler | Analyst Keyword Exclusion | s3.amazonaws.com blocked'
         '</div>',
         unsafe_allow_html=True
     )
